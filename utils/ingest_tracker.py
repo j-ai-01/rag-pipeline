@@ -1,16 +1,15 @@
 import json
 from pathlib import Path
-from config import INGEST_LOG
 
 
-def load_ingested() -> dict:
-    if INGEST_LOG.exists():
-        return json.loads(INGEST_LOG.read_text())
+def load_ingested(log_path: Path) -> dict:
+    if log_path.exists():
+        return json.loads(log_path.read_text())
     return {}
 
 
-def save_ingested(ingested: dict) -> None:
-    INGEST_LOG.write_text(json.dumps(ingested, indent=2))
+def save_ingested(ingested: dict, log_path: Path) -> None:
+    log_path.write_text(json.dumps(ingested, indent=2))
 
 
 def is_already_ingested(file_hash: str, ingested: dict) -> bool:

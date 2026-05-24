@@ -1,12 +1,8 @@
+from dataclasses import dataclass
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
-CHROMA_DIR = BASE_DIR / "chroma_db"
-INGEST_LOG = BASE_DIR / ".ingested_files.json"
-DOCSTORE_PATH = BASE_DIR / "docstore.json"
-BM25_INDEX_PATH = BASE_DIR / "bm25_index.pkl"
-LEAF_NODES_PATH = BASE_DIR / "leaf_nodes.pkl"
+INDEXES_DIR = BASE_DIR / "indexes"
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 EMBED_MODEL = "nomic-embed-text"
@@ -17,8 +13,7 @@ PARENT_CHUNK_SIZE = 1024
 CHILD_CHUNK_SIZE = 256
 CHUNK_OVERLAP = 20
 TOP_K = 5
-HYBRID_ALPHA = 0.5    # 0.0 = pure BM25, 1.0 = pure vector
-COLLECTION_NAME = "rag_docs"
+HYBRID_ALPHA = 0.5
 
 SUPPORTED_EXTENSIONS = {
     "text": {".txt", ".md"},
@@ -33,3 +28,27 @@ ALL_SUPPORTED = (
     | SUPPORTED_EXTENSIONS["docx"]
     | SUPPORTED_EXTENSIONS["image"]
 )
+
+
+@dataclass
+class IndexPaths:
+    data_dir: Path
+    chroma_dir: Path
+    docstore_path: Path
+    bm25_index_path: Path
+    leaf_nodes_path: Path
+    ingest_log: Path
+    collection_name: str
+
+
+def get_index_paths(name: str) -> IndexPaths:
+    root = INDEXES_DIR / name
+    return IndexPaths(
+        data_dir=root / "data",
+        chroma_dir=root / "chroma_db",
+        docstore_path=root / "docstore.json",
+        bm25_index_path=root / "bm25_index.pkl",
+        leaf_nodes_path=root / "leaf_nodes.pkl",
+        ingest_log=root / ".ingested_files.json",
+        collection_name=f"rag_{name}",
+    )
