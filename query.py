@@ -103,7 +103,7 @@ def build_query_engine():
     bm25_retriever = None
     if BM25_INDEX_PATH.exists():
         try:
-            bm25_retriever = BM25Retriever.from_persist_path(str(BM25_INDEX_PATH))
+            bm25_retriever = BM25Retriever.from_persist_dir(str(BM25_INDEX_PATH))
             bm25_retriever.similarity_top_k = top_k
         except Exception:
             print("Warning: Could not load BM25 index. Using vector-only retrieval.")

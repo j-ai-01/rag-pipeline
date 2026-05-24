@@ -7,3 +7,6 @@ chroma_db/
 .ingested_files.json
 *.egg-info/
 .DS_Store
+docstore.json
+bm25_index.pkl
+leaf_nodes.pkl
