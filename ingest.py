@@ -1,6 +1,8 @@
 import sys
 import io
 import os
+import pickle
+import shutil
 import logging
 import warnings
 
@@ -23,19 +25,24 @@ class _StderrFilter(io.TextIOWrapper):
 
 
 sys.stderr = _StderrFilter(io.BytesIO())
+
 from pathlib import Path
 from typing import List, Tuple
 
 import chromadb
 from llama_index.core import VectorStoreIndex, StorageContext, Settings, Document
+from llama_index.core.node_parser import HierarchicalNodeParser, get_leaf_nodes
+from llama_index.core.storage.docstore import SimpleDocumentStore
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.chroma import ChromaVectorStore
+from llama_index.retrievers.bm25 import BM25Retriever
 
 from config import (
     DATA_DIR, CHROMA_DIR, EMBED_MODEL, LLM_MODEL,
-    OLLAMA_BASE_URL, CHUNK_SIZE, CHUNK_OVERLAP,
+    OLLAMA_BASE_URL, PARENT_CHUNK_SIZE, CHILD_CHUNK_SIZE, CHUNK_OVERLAP,
     COLLECTION_NAME, ALL_SUPPORTED, SUPPORTED_EXTENSIONS,
+    DOCSTORE_PATH, BM25_INDEX_PATH, LEAF_NODES_PATH, INGEST_LOG, TOP_K,
 )
 from utils.ollama_check import assert_ollama_running
 from utils.file_hash import file_hash
@@ -45,7 +52,6 @@ from utils.chroma_client import make_chroma_client
 
 
 def collect_files(data_dir: Path) -> List[Path]:
-    """Scan data_dir and return supported files. Warn about unsupported."""
     found = []
     for path in sorted(data_dir.rglob("*")):
         if not path.is_file():
@@ -60,7 +66,6 @@ def collect_files(data_dir: Path) -> List[Path]:
 def build_documents(
     files: List[Path], ingested: dict
 ) -> Tuple[List[Document], dict]:
-    """Parse files into LlamaIndex Documents. Skip already-ingested files."""
     documents = []
     updated_ingested = dict(ingested)
 
@@ -116,11 +121,22 @@ def build_documents(
     return documents, updated_ingested
 
 
-def run_ingestion() -> None:
+def _wipe_index() -> None:
+    for path in [CHROMA_DIR, DOCSTORE_PATH, BM25_INDEX_PATH, LEAF_NODES_PATH, INGEST_LOG]:
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+    print("Index wiped. Re-indexing all files...")
+
+
+def run_ingestion(reindex: bool = False) -> None:
     assert_ollama_running()
 
+    if reindex:
+        _wipe_index()
+
     DATA_DIR.mkdir(exist_ok=True)
-    CHROMA_DIR.mkdir(exist_ok=True)
 
     files = collect_files(DATA_DIR)
     if not files:
@@ -136,29 +152,62 @@ def run_ingestion() -> None:
         print("No new files to ingest. Everything is up to date.")
         return
 
-    print(f"\nEmbedding {len(documents)} document(s) via Ollama ({EMBED_MODEL})...")
+    print(f"\nParsing {len(documents)} document(s) into hierarchical chunks...")
 
-    Settings.embed_model = OllamaEmbedding(
-        model_name=EMBED_MODEL, base_url=OLLAMA_BASE_URL
-    )
+    Settings.embed_model = OllamaEmbedding(model_name=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
     Settings.llm = Ollama(model=LLM_MODEL, base_url=OLLAMA_BASE_URL)
-    Settings.chunk_size = CHUNK_SIZE
-    Settings.chunk_overlap = CHUNK_OVERLAP
 
+    parser = HierarchicalNodeParser.from_defaults(
+        chunk_sizes=[PARENT_CHUNK_SIZE, CHILD_CHUNK_SIZE],
+        chunk_overlap=CHUNK_OVERLAP,
+    )
+    all_nodes = parser.get_nodes_from_documents(documents)
+    leaf_nodes = get_leaf_nodes(all_nodes)
+    print(f"  {len(all_nodes)} total nodes, {len(leaf_nodes)} child (leaf) nodes")
+
+    # Load or create docstore and add all new nodes
+    if DOCSTORE_PATH.exists():
+        docstore = SimpleDocumentStore.from_persist_path(str(DOCSTORE_PATH))
+    else:
+        docstore = SimpleDocumentStore()
+    docstore.add_documents(all_nodes)
+
+    # Embed child nodes into ChromaDB
+    CHROMA_DIR.mkdir(exist_ok=True)
     chroma_client = make_chroma_client(str(CHROMA_DIR))
     chroma_collection = chroma_client.get_or_create_collection(COLLECTION_NAME)
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
-
-    VectorStoreIndex.from_documents(
-        documents,
-        storage_context=storage_context,
-        show_progress=True,
+    storage_context = StorageContext.from_defaults(
+        docstore=docstore,
+        vector_store=vector_store,
     )
 
+    print(f"Embedding {len(leaf_nodes)} child chunks via Ollama ({EMBED_MODEL})...")
+    VectorStoreIndex(leaf_nodes, storage_context=storage_context, show_progress=True)
+
+    # Persist docstore
+    docstore.persist(str(DOCSTORE_PATH))
+
+    # Accumulate all leaf nodes and rebuild BM25 index from all of them
+    existing_leaf_nodes: list = []
+    if LEAF_NODES_PATH.exists():
+        with open(LEAF_NODES_PATH, "rb") as f:
+            existing_leaf_nodes = pickle.load(f)
+    all_leaf_nodes = existing_leaf_nodes + leaf_nodes
+    with open(LEAF_NODES_PATH, "wb") as f:
+        pickle.dump(all_leaf_nodes, f)
+
+    print("Building BM25 keyword index...")
+    bm25_retriever = BM25Retriever.from_defaults(
+        nodes=all_leaf_nodes,
+        similarity_top_k=TOP_K,
+    )
+    bm25_retriever.persist(str(BM25_INDEX_PATH))
+
     save_ingested(updated_ingested)
-    print(f"\nDone. {len(documents)} document(s) indexed into ChromaDB.")
+    print(f"\nDone. {len(documents)} document(s) indexed ({len(leaf_nodes)} child chunks embedded).")
 
 
 if __name__ == "__main__":
-    run_ingestion()
+    reindex = "--reindex" in sys.argv
+    run_ingestion(reindex=reindex)
