@@ -5,6 +5,7 @@ import pickle
 import shutil
 import logging
 import warnings
+import argparse
 
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 os.environ["CHROMA_ANONYMIZED_TELEMETRY"] = "false"
@@ -39,10 +40,10 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.retrievers.bm25 import BM25Retriever
 
 from config import (
-    DATA_DIR, CHROMA_DIR, EMBED_MODEL, LLM_MODEL,
-    OLLAMA_BASE_URL, PARENT_CHUNK_SIZE, CHILD_CHUNK_SIZE, CHUNK_OVERLAP,
-    COLLECTION_NAME, ALL_SUPPORTED, SUPPORTED_EXTENSIONS,
-    DOCSTORE_PATH, BM25_INDEX_PATH, LEAF_NODES_PATH, INGEST_LOG, TOP_K,
+    EMBED_MODEL, LLM_MODEL, OLLAMA_BASE_URL,
+    PARENT_CHUNK_SIZE, CHILD_CHUNK_SIZE, CHUNK_OVERLAP,
+    ALL_SUPPORTED, SUPPORTED_EXTENSIONS, TOP_K,
+    get_index_paths, IndexPaths,
 )
 from utils.ollama_check import assert_ollama_running
 from utils.file_hash import file_hash
@@ -121,8 +122,9 @@ def build_documents(
     return documents, updated_ingested
 
 
-def _wipe_index() -> None:
-    for path in [CHROMA_DIR, DOCSTORE_PATH, BM25_INDEX_PATH, LEAF_NODES_PATH, INGEST_LOG]:
+def _wipe_index(paths: IndexPaths) -> None:
+    for path in [paths.chroma_dir, paths.docstore_path, paths.bm25_index_path,
+                 paths.leaf_nodes_path, paths.ingest_log]:
         if path.is_dir():
             shutil.rmtree(path)
         elif path.exists():
@@ -130,20 +132,21 @@ def _wipe_index() -> None:
     print("Index wiped. Re-indexing all files...")
 
 
-def run_ingestion(reindex: bool = False) -> None:
+def run_ingestion(index_name: str = "default", reindex: bool = False) -> None:
     assert_ollama_running()
+    paths = get_index_paths(index_name)
 
     if reindex:
-        _wipe_index()
+        _wipe_index(paths)
 
-    DATA_DIR.mkdir(exist_ok=True)
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
 
-    files = collect_files(DATA_DIR)
+    files = collect_files(paths.data_dir)
     if not files:
-        print("No files found in data/. Add files and re-run ingest.py")
+        print(f"No files found in {paths.data_dir}. Add files and re-run ingest.py")
         return
 
-    ingested = load_ingested()
+    ingested = load_ingested(paths.ingest_log)
     print(f"Found {len(files)} file(s). Checking for new files...")
 
     documents, updated_ingested = build_documents(files, ingested)
@@ -165,17 +168,15 @@ def run_ingestion(reindex: bool = False) -> None:
     leaf_nodes = get_leaf_nodes(all_nodes)
     print(f"  {len(all_nodes)} total nodes, {len(leaf_nodes)} child (leaf) nodes")
 
-    # Load or create docstore and add all new nodes
-    if DOCSTORE_PATH.exists():
-        docstore = SimpleDocumentStore.from_persist_path(str(DOCSTORE_PATH))
+    if paths.docstore_path.exists():
+        docstore = SimpleDocumentStore.from_persist_path(str(paths.docstore_path))
     else:
         docstore = SimpleDocumentStore()
     docstore.add_documents(all_nodes)
 
-    # Embed child nodes into ChromaDB
-    CHROMA_DIR.mkdir(exist_ok=True)
-    chroma_client = make_chroma_client(str(CHROMA_DIR))
-    chroma_collection = chroma_client.get_or_create_collection(COLLECTION_NAME)
+    paths.chroma_dir.mkdir(parents=True, exist_ok=True)
+    chroma_client = make_chroma_client(str(paths.chroma_dir))
+    chroma_collection = chroma_client.get_or_create_collection(paths.collection_name)
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     storage_context = StorageContext.from_defaults(
         docstore=docstore,
@@ -185,16 +186,14 @@ def run_ingestion(reindex: bool = False) -> None:
     print(f"Embedding {len(leaf_nodes)} child chunks via Ollama ({EMBED_MODEL})...")
     VectorStoreIndex(leaf_nodes, storage_context=storage_context, show_progress=True)
 
-    # Persist docstore
-    docstore.persist(str(DOCSTORE_PATH))
+    docstore.persist(str(paths.docstore_path))
 
-    # Accumulate all leaf nodes and rebuild BM25 index from all of them
     existing_leaf_nodes: list = []
-    if LEAF_NODES_PATH.exists():
-        with open(LEAF_NODES_PATH, "rb") as f:
+    if paths.leaf_nodes_path.exists():
+        with open(paths.leaf_nodes_path, "rb") as f:
             existing_leaf_nodes = pickle.load(f)
     all_leaf_nodes = existing_leaf_nodes + leaf_nodes
-    with open(LEAF_NODES_PATH, "wb") as f:
+    with open(paths.leaf_nodes_path, "wb") as f:
         pickle.dump(all_leaf_nodes, f)
 
     print("Building BM25 keyword index...")
@@ -202,12 +201,15 @@ def run_ingestion(reindex: bool = False) -> None:
         nodes=all_leaf_nodes,
         similarity_top_k=TOP_K,
     )
-    bm25_retriever.persist(str(BM25_INDEX_PATH))
+    bm25_retriever.persist(str(paths.bm25_index_path))
 
-    save_ingested(updated_ingested)
+    save_ingested(updated_ingested, paths.ingest_log)
     print(f"\nDone. {len(documents)} document(s) indexed ({len(leaf_nodes)} child chunks embedded).")
 
 
 if __name__ == "__main__":
-    reindex = "--reindex" in sys.argv
-    run_ingestion(reindex=reindex)
+    parser = argparse.ArgumentParser(description="Ingest documents into a named index.")
+    parser.add_argument("--index", default="default", help="Index name (default: default)")
+    parser.add_argument("--reindex", action="store_true", help="Wipe and re-index all files")
+    args = parser.parse_args()
+    run_ingestion(index_name=args.index, reindex=args.reindex)

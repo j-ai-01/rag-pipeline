@@ -1,6 +1,19 @@
 from pathlib import Path
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
+from config import IndexPaths
 from ingest import collect_files, build_documents, run_ingestion
+
+
+def _fake_paths(tmp_path: Path) -> IndexPaths:
+    return IndexPaths(
+        data_dir=tmp_path,
+        chroma_dir=tmp_path / "chroma_db",
+        docstore_path=tmp_path / "docstore.json",
+        bm25_index_path=tmp_path / "bm25_index.pkl",
+        leaf_nodes_path=tmp_path / "leaf_nodes.pkl",
+        ingest_log=tmp_path / ".ingested_files.json",
+        collection_name="rag_test",
+    )
 
 
 def test_collect_files_finds_supported_types(tmp_path):
@@ -39,9 +52,8 @@ def test_build_documents_skips_already_ingested(tmp_path):
 
 
 def test_run_ingestion_prints_message_when_no_files(tmp_path, capsys):
-    with patch("ingest.DATA_DIR", tmp_path), \
-         patch("ingest.assert_ollama_running"), \
-         patch("ingest.load_ingested", return_value={}):
+    with patch("ingest.get_index_paths", return_value=_fake_paths(tmp_path)), \
+         patch("ingest.assert_ollama_running"):
         run_ingestion()
     captured = capsys.readouterr()
     assert "No files found" in captured.out
