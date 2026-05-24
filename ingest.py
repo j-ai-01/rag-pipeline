@@ -1,4 +1,28 @@
 import sys
+import io
+import os
+import logging
+import warnings
+
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMA_ANONYMIZED_TELEMETRY"] = "false"
+warnings.filterwarnings("ignore")
+logging.getLogger("chromadb").setLevel(logging.ERROR)
+
+
+class _StderrFilter(io.TextIOWrapper):
+    _blocked = ("Failed to send telemetry event",)
+
+    def write(self, msg):
+        if not any(s in msg for s in self._blocked):
+            sys.__stderr__.write(msg)
+        return len(msg)
+
+    def flush(self):
+        sys.__stderr__.flush()
+
+
+sys.stderr = _StderrFilter(io.BytesIO())
 from pathlib import Path
 from typing import List, Tuple
 
@@ -17,6 +41,7 @@ from utils.ollama_check import assert_ollama_running
 from utils.file_hash import file_hash
 from utils.ingest_tracker import load_ingested, save_ingested, is_already_ingested
 from utils.image_describer import describe_image
+from utils.chroma_client import make_chroma_client
 
 
 def collect_files(data_dir: Path) -> List[Path]:
@@ -120,7 +145,7 @@ def run_ingestion() -> None:
     Settings.chunk_size = CHUNK_SIZE
     Settings.chunk_overlap = CHUNK_OVERLAP
 
-    chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    chroma_client = make_chroma_client(str(CHROMA_DIR))
     chroma_collection = chroma_client.get_or_create_collection(COLLECTION_NAME)
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)

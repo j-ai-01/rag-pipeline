@@ -1,4 +1,28 @@
 import sys
+import io
+import os
+import logging
+import warnings
+
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMA_ANONYMIZED_TELEMETRY"] = "false"
+warnings.filterwarnings("ignore")
+logging.getLogger("chromadb").setLevel(logging.ERROR)
+
+
+class _StderrFilter(io.TextIOWrapper):
+    _blocked = ("Failed to send telemetry event",)
+
+    def write(self, msg):
+        if not any(s in msg for s in self._blocked):
+            sys.__stderr__.write(msg)
+        return len(msg)
+
+    def flush(self):
+        sys.__stderr__.flush()
+
+
+sys.stderr = _StderrFilter(io.BytesIO())
 from typing import List
 
 import chromadb
@@ -13,6 +37,7 @@ from config import (
     CHUNK_SIZE, CHUNK_OVERLAP, TOP_K, COLLECTION_NAME,
 )
 from utils.ollama_check import assert_ollama_running
+from utils.chroma_client import make_chroma_client
 
 
 def format_sources(source_nodes: List[NodeWithScore]) -> str:
@@ -45,11 +70,12 @@ def build_query_engine():
     Settings.chunk_size = CHUNK_SIZE
     Settings.chunk_overlap = CHUNK_OVERLAP
 
-    chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    chroma_client = make_chroma_client(str(CHROMA_DIR))
     chroma_collection = chroma_client.get_or_create_collection(COLLECTION_NAME)
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     index = VectorStoreIndex.from_vector_store(vector_store)
-    return index.as_query_engine(similarity_top_k=TOP_K)
+    top_k = min(TOP_K, chroma_collection.count()) or 1
+    return index.as_query_engine(similarity_top_k=top_k)
 
 
 def run_query(question: str) -> None:
