@@ -73,3 +73,13 @@ def test_all_retrievers_contribute_with_equal_alpha():
     ids = [n.node.node_id for n in result]
     assert "v" in ids
     assert "b" in ids
+
+
+def test_normalize_does_not_mutate_input_nodes():
+    nodes = [_node("a", 10.0), _node("b", 20.0)]
+    original_scores = [n.score for n in nodes]
+    hybrid = HybridRetriever(_retriever(nodes), None, alpha=1.0, top_k=5)
+    hybrid._retrieve(_query())
+    # original nodes must be unchanged
+    for n, orig in zip(nodes, original_scores):
+        assert n.score == orig

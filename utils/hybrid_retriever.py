@@ -26,12 +26,11 @@ class HybridRetriever(BaseRetriever):
         scores = [n.score or 0.0 for n in nodes]
         min_s, max_s = min(scores), max(scores)
         if max_s == min_s:
-            for n in nodes:
-                n.score = 1.0
-            return nodes
-        for n in nodes:
-            n.score = ((n.score or 0.0) - min_s) / (max_s - min_s)
-        return nodes
+            return [NodeWithScore(node=n.node, score=1.0) for n in nodes]
+        return [
+            NodeWithScore(node=n.node, score=((n.score or 0.0) - min_s) / (max_s - min_s))
+            for n in nodes
+        ]
 
     def _retrieve(self, query_bundle: QueryBundle) -> List[NodeWithScore]:
         vector_nodes = self._normalize(self._vector_retriever.retrieve(query_bundle))
