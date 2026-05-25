@@ -10,3 +10,10 @@ chroma_db/
 docstore.json
 bm25_index.pkl
 leaf_nodes.pkl
+
+# Per-index artifacts (auto-generated under indexes/<name>/)
+indexes/*/chroma_db/
+indexes/*/docstore.json
+indexes/*/bm25_index.pkl
+indexes/*/leaf_nodes.pkl
+indexes/*/.ingested_files.json
