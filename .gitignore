@@ -17,3 +17,6 @@ indexes/*/docstore.json
 indexes/*/bm25_index.pkl
 indexes/*/leaf_nodes.pkl
 indexes/*/.ingested_files.json
+
+# Never commit user data
+indexes/*/data/
