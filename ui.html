@@ -243,20 +243,29 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@11/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
   <script>
     // ── Markdown renderer ──────────────────────────────────────────────────
     const renderer = new marked.Renderer();
-    renderer.code = (code, lang) => {
-      if (lang === 'mermaid') {
+    renderer.code = function(codeOrToken, lang) {
+      // marked v9+: first arg is a token object {text, lang}; v4-v8: (code, lang)
+      const code = (typeof codeOrToken === 'object' && codeOrToken !== null)
+        ? (codeOrToken.text || '')
+        : (codeOrToken || '');
+      const language = (typeof codeOrToken === 'object' && codeOrToken !== null)
+        ? (codeOrToken.lang || '')
+        : (lang || '');
+
+      if (language === 'mermaid') {
         return `<div class="mermaid-wrap"><div class="mermaid">${escHtml(code)}</div></div>`;
       }
-      const hl = (lang && hljs.getLanguage(lang))
-        ? hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
+      const hl = (language && hljs.getLanguage(language))
+        ? hljs.highlight(code, { language, ignoreIllegals: true }).value
         : hljs.highlightAuto(code).value;
-      return `<div class="code-wrap"><div class="code-lang-bar">${escHtml(lang || 'text')}</div><pre><code>${hl}</code></pre></div>`;
+      return `<div class="code-wrap"><div class="code-lang-bar">${escHtml(language || 'text')}</div><pre><code>${hl}</code></pre></div>`;
     };
     marked.use({ renderer, breaks: true });
 
@@ -265,7 +274,8 @@
     const HLJS_LIGHT = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css';
 
     (function initTheme() {
-      const t = localStorage.getItem('rag-theme') || 'dark';
+      const stored = localStorage.getItem('rag-theme');
+      const t = (stored === 'light' || stored === 'dark') ? stored : 'dark';
       applyTheme(t);
     })();
 
@@ -397,6 +407,12 @@
             }
           }
         }
+
+        // fallback if stream closed without done event
+        if (accumulated && !entry.querySelector('.prose')) {
+          cursor?.remove();
+          await renderMarkdown(answerText, accumulated);
+        }
       } catch (e) {
         cursor?.remove();
         showError(answerText, `Request failed: ${e.message}`);
@@ -469,7 +485,6 @@
           btn.className = 'show-more-btn';
           btn.textContent = 'show more ▾';
           btn.dataset.expanded = '0';
-          btn.dataset.full = full;
           btn.addEventListener('click', function () {
             if (this.dataset.expanded === '1') {
               previewEl.textContent = `"${full.slice(0, 220)}…"`;
@@ -491,7 +506,7 @@
 
     async function renderMarkdown(el, text) {
       el.className = 'prose';
-      el.innerHTML = marked.parse(text);
+      el.innerHTML = DOMPurify.sanitize(marked.parse(text));
       const mermaidNodes = el.querySelectorAll('.mermaid');
       if (mermaidNodes.length > 0) {
         await mermaid.run({ nodes: mermaidNodes });
