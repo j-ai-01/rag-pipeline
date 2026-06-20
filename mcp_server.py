@@ -39,6 +39,13 @@ from config import EMBED_MODEL, OLLAMA_BASE_URL
 from query import list_indexed, build_retriever
 
 app = FastAPI(title="RAG Pipeline MCP Server")
+
+
+@app.get("/indexes")
+async def get_indexes():
+    return list_indexed()
+
+
 server = Server("rag-pipeline")
 sse = SseServerTransport("/messages")
 
