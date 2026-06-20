@@ -28,6 +28,7 @@ sys.stderr = _StderrFilter(io.BytesIO())
 from typing import Any, List, Optional
 
 from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp import types
@@ -35,7 +36,7 @@ from mcp import types
 from llama_index.core import Settings
 from llama_index.embeddings.ollama import OllamaEmbedding
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from config import EMBED_MODEL, OLLAMA_BASE_URL
 from query import list_indexed, build_retriever, build_query_engine, format_sources
@@ -53,15 +54,28 @@ class QueryRequest(BaseModel):
     question: str
     indexes: Optional[List[str]] = None
 
+    @field_validator("question")
+    @classmethod
+    def question_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("question must not be empty")
+        return v.strip()
+
 
 @app.post("/query")
 async def query_endpoint(req: QueryRequest):
     if not check_ollama_running():
-        return {"error": "Ollama is not running. Start it with: ollama serve"}
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Ollama is not running. Start it with: ollama serve"},
+        )
 
     index_names = req.indexes if req.indexes else list_indexed()
     if not index_names:
-        return {"error": "No indexes found. Run `python ingest.py --index <name>` first."}
+        return JSONResponse(
+            status_code=404,
+            content={"error": "No indexes found. Run `python ingest.py --index <name>` first."},
+        )
 
     try:
         engine = build_query_engine(index_names)
@@ -70,7 +84,7 @@ async def query_endpoint(req: QueryRequest):
         sources = format_sources(response.source_nodes)
         return {"answer": answer, "sources": sources}
     except Exception as e:
-        return {"error": str(e)}
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 server = Server("rag-pipeline")
