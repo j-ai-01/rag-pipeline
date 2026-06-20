@@ -42,7 +42,7 @@ app = FastAPI(title="RAG Pipeline MCP Server")
 
 
 @app.get("/indexes")
-async def get_indexes():
+async def get_indexes() -> List[str]:
     return list_indexed()
 
 
