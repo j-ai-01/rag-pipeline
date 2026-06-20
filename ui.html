@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG Search</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d1117; color: #e6edf3;
+      font-family: system-ui, -apple-system, sans-serif;
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; padding: 48px 20px;
+    }
+    .container { width: 100%; max-width: 720px; }
+    h1 { text-align: center; font-size: 26px; font-weight: 700; margin-bottom: 4px; }
+    .subtitle { text-align: center; color: #8b949e; font-size: 14px; margin-bottom: 36px; }
+    .section-label {
+      color: #8b949e; font-size: 11px; text-transform: uppercase;
+      letter-spacing: .06em; margin-bottom: 8px;
+    }
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; min-height: 30px; }
+    .chip {
+      background: #1c2128; border: 1px solid #30363d; color: #8b949e;
+      border-radius: 20px; padding: 4px 14px; font-size: 12px;
+      cursor: pointer; transition: all .15s; user-select: none;
+    }
+    .chip:hover { border-color: #58a6ff; color: #c9d1d9; }
+    .chip.selected { background: #1f3a1f; border-color: #238636; color: #3fb950; }
+    .status { font-size: 12px; margin-bottom: 20px; min-height: 18px; color: #8b949e; }
+    .status.filtered { color: #3fb950; }
+    .search-row { display: flex; gap: 8px; margin-bottom: 24px; }
+    input {
+      flex: 1; background: #161b22; border: 1px solid #30363d;
+      border-radius: 6px; padding: 10px 14px; color: #e6edf3;
+      font-size: 14px; outline: none;
+    }
+    input:focus { border-color: #58a6ff; }
+    button {
+      background: #238636; color: #fff; border: none;
+      border-radius: 6px; padding: 10px 22px; font-size: 14px;
+      cursor: pointer; white-space: nowrap;
+    }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .result {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 6px; padding: 18px; display: none;
+    }
+    .result.visible { display: block; }
+    .result-label {
+      color: #58a6ff; font-size: 11px; text-transform: uppercase;
+      letter-spacing: .06em; margin-bottom: 10px;
+    }
+    .answer { color: #c9d1d9; font-size: 14px; line-height: 1.75; white-space: pre-wrap; }
+    .sources-section { border-top: 1px solid #21262d; margin-top: 14px; padding-top: 12px; }
+    .sources-label {
+      color: #8b949e; font-size: 11px; text-transform: uppercase;
+      letter-spacing: .06em; margin-bottom: 6px;
+    }
+    .sources-text { color: #8b949e; font-size: 13px; line-height: 1.8; white-space: pre-wrap; }
+    .error-text { color: #f85149; }
+    .no-indexes { color: #8b949e; font-size: 13px; font-style: italic; }
+    .spinner {
+      display: inline-block; width: 13px; height: 13px;
+      border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
+      border-radius: 50%; animation: spin .6s linear infinite;
+      vertical-align: middle; margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>RAG Search</h1>
+    <p class="subtitle">Query your local knowledge base</p>
+
+    <div class="section-label">
+      Indexes
+      <span style="color:#3d444d;text-transform:none;letter-spacing:0;font-weight:400;">
+        &nbsp;(none selected = all)
+      </span>
+    </div>
+    <div class="chips" id="chips"></div>
+    <div class="status" id="status">Searching: all indexes</div>
+
+    <div class="search-row">
+      <input id="question" type="text" placeholder="Ask your knowledge base..." autocomplete="off" />
+      <button id="ask-btn" disabled>Ask</button>
+    </div>
+
+    <div class="result" id="result">
+      <div class="result-label">Answer</div>
+      <div class="answer" id="answer"></div>
+      <div class="sources-section" id="sources-section">
+        <div class="sources-label">Sources</div>
+        <div class="sources-text" id="sources"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let selected = new Set();
+
+    async function loadIndexes() {
+      const chipsEl = document.getElementById('chips');
+      try {
+        const res = await fetch('/indexes');
+        const indexes = await res.json();
+        if (indexes.length === 0) {
+          chipsEl.innerHTML =
+            '<span class="no-indexes">No indexes found — run <code>python ingest.py --index &lt;name&gt;</code> first.</span>';
+          return;
+        }
+        chipsEl.innerHTML = indexes
+          .map(name => `<span class="chip" data-name="${name}" onclick="toggleChip(this)">📁 ${name}</span>`)
+          .join('');
+      } catch {
+        chipsEl.innerHTML =
+          '<span class="no-indexes" style="color:#f85149">Could not reach server at /indexes.</span>';
+      }
+    }
+
+    function toggleChip(el) {
+      const name = el.dataset.name;
+      if (selected.has(name)) {
+        selected.delete(name);
+        el.classList.remove('selected');
+      } else {
+        selected.add(name);
+        el.classList.add('selected');
+      }
+      const statusEl = document.getElementById('status');
+      if (selected.size === 0) {
+        statusEl.textContent = 'Searching: all indexes';
+        statusEl.className = 'status';
+      } else {
+        statusEl.textContent = 'Searching: ' + [...selected].join(', ');
+        statusEl.className = 'status filtered';
+      }
+    }
+
+    const questionEl = document.getElementById('question');
+    const askBtn = document.getElementById('ask-btn');
+
+    questionEl.addEventListener('input', () => {
+      askBtn.disabled = questionEl.value.trim() === '';
+    });
+    questionEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !askBtn.disabled) ask();
+    });
+    askBtn.addEventListener('click', ask);
+
+    async function ask() {
+      const question = questionEl.value.trim();
+      if (!question) return;
+
+      askBtn.disabled = true;
+      askBtn.innerHTML = '<span class="spinner"></span>Asking…';
+
+      const resultEl = document.getElementById('result');
+      const answerEl = document.getElementById('answer');
+      const sourcesEl = document.getElementById('sources');
+      const sourcesSectionEl = document.getElementById('sources-section');
+      resultEl.classList.remove('visible');
+
+      try {
+        const res = await fetch('/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            question,
+            indexes: selected.size > 0 ? [...selected] : null,
+          }),
+        });
+        const data = await res.json();
+
+        if (data.error) {
+          answerEl.innerHTML = `<span class="error-text">${data.error}</span>`;
+          sourcesSectionEl.style.display = 'none';
+        } else {
+          answerEl.textContent = data.answer;
+          sourcesEl.textContent = data.sources;
+          sourcesSectionEl.style.display = 'block';
+        }
+      } catch (e) {
+        answerEl.innerHTML = `<span class="error-text">Request failed: ${e.message}</span>`;
+        sourcesSectionEl.style.display = 'none';
+      }
+
+      resultEl.classList.add('visible');
+      askBtn.disabled = false;
+      askBtn.textContent = 'Ask';
+    }
+
+    loadIndexes();
+  </script>
+</body>
+</html>

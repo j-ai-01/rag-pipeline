@@ -109,3 +109,10 @@ def test_post_query_returns_error_on_engine_exception():
     assert response.status_code == 500
     assert "error" in response.json()
     assert "LLM timeout" in response.json()["error"]
+
+
+def test_get_root_serves_html():
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "RAG Search" in response.text

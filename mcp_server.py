@@ -25,6 +25,7 @@ class _StderrFilter(io.TextIOWrapper):
 
 sys.stderr = _StderrFilter(io.BytesIO())
 
+from pathlib import Path
 from typing import Any, List, Optional
 
 from fastapi import FastAPI, Request
@@ -43,6 +44,11 @@ from query import list_indexed, build_retriever, build_query_engine, format_sour
 from utils.ollama_check import check_ollama_running
 
 app = FastAPI(title="RAG Pipeline MCP Server")
+
+
+@app.get("/")
+async def serve_ui():
+    return FileResponse(str(Path(__file__).parent / "ui.html"), media_type="text/html")
 
 
 @app.get("/indexes")
