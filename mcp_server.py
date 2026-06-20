@@ -76,7 +76,7 @@ async def query_endpoint(req: QueryRequest):
             content={"error": "Ollama is not running. Start it with: ollama serve"},
         )
 
-    index_names = req.indexes if req.indexes else list_indexed()
+    index_names = req.indexes if req.indexes is not None else list_indexed()
     if not index_names:
         return JSONResponse(
             status_code=404,
