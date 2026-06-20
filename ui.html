@@ -111,9 +111,16 @@
             '<span class="no-indexes">No indexes found — run <code>python ingest.py --index &lt;name&gt;</code> first.</span>';
           return;
         }
-        chipsEl.innerHTML = indexes
-          .map(name => `<span class="chip" data-name="${name}" onclick="toggleChip(this)">📁 ${name}</span>`)
-          .join('');
+        const frag = document.createDocumentFragment();
+        for (const name of indexes) {
+          const el = document.createElement('span');
+          el.className = 'chip';
+          el.dataset.name = name;
+          el.textContent = `📁 ${name}`;
+          el.addEventListener('click', () => toggleChip(el));
+          frag.appendChild(el);
+        }
+        chipsEl.replaceChildren(frag);
       } catch {
         chipsEl.innerHTML =
           '<span class="no-indexes" style="color:#f85149">Could not reach server at /indexes.</span>';
@@ -174,8 +181,11 @@
         });
         const data = await res.json();
 
-        if (data.error) {
-          answerEl.innerHTML = `<span class="error-text">${data.error}</span>`;
+        if (!res.ok || data.error) {
+          const errSpan = document.createElement('span');
+          errSpan.className = 'error-text';
+          errSpan.textContent = data.error ?? `Server error ${res.status}`;
+          answerEl.replaceChildren(errSpan);
           sourcesSectionEl.style.display = 'none';
         } else {
           answerEl.textContent = data.answer;
@@ -183,7 +193,10 @@
           sourcesSectionEl.style.display = 'block';
         }
       } catch (e) {
-        answerEl.innerHTML = `<span class="error-text">Request failed: ${e.message}</span>`;
+        const errSpan = document.createElement('span');
+        errSpan.className = 'error-text';
+        errSpan.textContent = `Request failed: ${e.message}`;
+        answerEl.replaceChildren(errSpan);
         sourcesSectionEl.style.display = 'none';
       }
 
