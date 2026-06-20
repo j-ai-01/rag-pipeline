@@ -1,3 +1,4 @@
+import json
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from mcp_server import app
@@ -160,9 +161,8 @@ def test_post_query_stream_returns_event_sequence():
     assert response.status_code == 200
     assert "text/event-stream" in response.headers["content-type"]
 
-    import json as _json
     events = [
-        _json.loads(line[6:])
+        json.loads(line[6:])
         for line in response.text.split("\n\n")
         if line.startswith("data: ")
     ]
@@ -176,13 +176,11 @@ def test_post_query_stream_returns_event_sequence():
 
 
 def test_post_query_stream_error_when_ollama_not_running():
-    import json as _json
-
     with patch("mcp_server.check_ollama_running", return_value=False):
         response = client.post("/query/stream", json={"question": "hi"})
 
     events = [
-        _json.loads(line[6:])
+        json.loads(line[6:])
         for line in response.text.split("\n\n")
         if line.startswith("data: ")
     ]
@@ -191,14 +189,12 @@ def test_post_query_stream_error_when_ollama_not_running():
 
 
 def test_post_query_stream_error_when_no_indexes():
-    import json as _json
-
     with patch("mcp_server.check_ollama_running", return_value=True), \
          patch("mcp_server.list_indexed", return_value=[]):
         response = client.post("/query/stream", json={"question": "hi"})
 
     events = [
-        _json.loads(line[6:])
+        json.loads(line[6:])
         for line in response.text.split("\n\n")
         if line.startswith("data: ")
     ]

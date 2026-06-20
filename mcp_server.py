@@ -38,6 +38,7 @@ from llama_index.core import Settings
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.llms.ollama import Ollama
 from llama_index.core.response_synthesizers import get_response_synthesizer
+from llama_index.core.schema import NodeWithScore
 from utils.multi_index_retriever import MultiIndexRetriever
 
 from pydantic import BaseModel, field_validator
@@ -71,7 +72,7 @@ class QueryRequest(BaseModel):
         return v.strip()
 
 
-def extract_snippets(source_nodes) -> List[dict]:
+def extract_snippets(source_nodes: List[NodeWithScore]) -> List[dict]:
     snippets = []
     seen = set()
     for node in source_nodes:
@@ -117,16 +118,20 @@ async def query_endpoint(req: QueryRequest):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\n"
+
+
 @app.post("/query/stream")
 async def query_stream(req: QueryRequest):
     def generate():
         if not check_ollama_running():
-            yield f'data: {json.dumps({"type": "error", "message": "Ollama is not running. Start it with: ollama serve"})}\n\n'
+            yield _sse({"type": "error", "message": "Ollama is not running. Start it with: ollama serve"})
             return
 
         index_names = req.indexes if req.indexes is not None else list_indexed()
         if not index_names:
-            yield f'data: {json.dumps({"type": "error", "message": "No indexes found. Run `python ingest.py --index <name>` first."})}\n\n'
+            yield _sse({"type": "error", "message": "No indexes found. Run `python ingest.py --index <name>` first."})
             return
 
         try:
@@ -141,7 +146,7 @@ async def query_stream(req: QueryRequest):
                     pass
 
             if not loaded:
-                yield f'data: {json.dumps({"type": "error", "message": "No indexes could be loaded."})}\n\n'
+                yield _sse({"type": "error", "message": "No indexes could be loaded."})
                 return
 
             retriever = (
@@ -151,18 +156,18 @@ async def query_stream(req: QueryRequest):
 
             source_nodes = retriever.retrieve(req.question)
             snippets = extract_snippets(source_nodes)
-            yield f'data: {json.dumps({"type": "sources", "snippets": snippets})}\n\n'
+            yield _sse({"type": "sources", "snippets": snippets})
 
             synthesizer = get_response_synthesizer(llm=Settings.llm, streaming=True)
             streaming_resp = synthesizer.synthesize(req.question, nodes=source_nodes)
 
             for token in streaming_resp.response_gen:
-                yield f'data: {json.dumps({"type": "token", "text": token})}\n\n'
+                yield _sse({"type": "token", "text": token})
 
-            yield f'data: {json.dumps({"type": "done"})}\n\n'
+            yield _sse({"type": "done"})
 
         except Exception as e:
-            yield f'data: {json.dumps({"type": "error", "message": str(e)})}\n\n'
+            yield _sse({"type": "error", "message": str(e)})
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
