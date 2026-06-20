@@ -68,6 +68,26 @@ class QueryRequest(BaseModel):
         return v.strip()
 
 
+def extract_snippets(source_nodes) -> List[dict]:
+    snippets = []
+    seen = set()
+    for node in source_nodes:
+        meta = node.metadata
+        filename = meta.get("filename", "unknown")
+        page = meta.get("page_number")
+        index_name = meta.get("index_name", "")
+        key = f"{filename}:{page}:{index_name}"
+        if key not in seen:
+            seen.add(key)
+            snippets.append({
+                "filename": filename,
+                "page": page,
+                "index": index_name,
+                "text": node.node.get_content()[:300],
+            })
+    return snippets
+
+
 @app.post("/query")
 async def query_endpoint(req: QueryRequest):
     if not check_ollama_running():
@@ -88,7 +108,8 @@ async def query_endpoint(req: QueryRequest):
         response = engine.query(req.question)
         answer = response.response or "Could not generate a summary. See sources below."
         sources = format_sources(response.source_nodes)
-        return {"answer": answer, "sources": sources}
+        snippets = extract_snippets(response.source_nodes)
+        return {"answer": answer, "sources": sources, "snippets": snippets}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

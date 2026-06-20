@@ -116,3 +116,21 @@ def test_get_root_serves_html():
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "RAG Search" in response.text
+
+
+def test_post_query_returns_snippets():
+    mock_engine = MagicMock()
+    mock_engine.query.return_value = _make_mock_response()
+
+    with patch("mcp_server.check_ollama_running", return_value=True), \
+         patch("mcp_server.list_indexed", return_value=["docs"]), \
+         patch("mcp_server.build_query_engine", return_value=mock_engine):
+        response = client.post("/query", json={"question": "What is 42?"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "snippets" in data
+    assert isinstance(data["snippets"], list)
+    assert len(data["snippets"]) == 1
+    assert data["snippets"][0]["filename"] == "doc.pdf"
+    assert "text" in data["snippets"][0]
