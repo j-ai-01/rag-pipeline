@@ -29,17 +29,20 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp import types
 
 from llama_index.core import Settings
 from llama_index.embeddings.ollama import OllamaEmbedding
+from llama_index.llms.ollama import Ollama
+from llama_index.core.response_synthesizers import get_response_synthesizer
+from utils.multi_index_retriever import MultiIndexRetriever
 
 from pydantic import BaseModel, field_validator
 
-from config import EMBED_MODEL, OLLAMA_BASE_URL
+from config import EMBED_MODEL, OLLAMA_BASE_URL, LLM_MODEL, TOP_K
 from query import list_indexed, build_retriever, build_query_engine, format_sources
 from utils.ollama_check import check_ollama_running
 
@@ -72,7 +75,7 @@ def extract_snippets(source_nodes) -> List[dict]:
     snippets = []
     seen = set()
     for node in source_nodes:
-        meta = node.metadata
+        meta = node.node.metadata
         filename = meta.get("filename", "unknown")
         page = meta.get("page_number")
         index_name = meta.get("index_name", "")
@@ -112,6 +115,56 @@ async def query_endpoint(req: QueryRequest):
         return {"answer": answer, "sources": sources, "snippets": snippets}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/query/stream")
+async def query_stream(req: QueryRequest):
+    def generate():
+        if not check_ollama_running():
+            yield f'data: {json.dumps({"type": "error", "message": "Ollama is not running. Start it with: ollama serve"})}\n\n'
+            return
+
+        index_names = req.indexes if req.indexes is not None else list_indexed()
+        if not index_names:
+            yield f'data: {json.dumps({"type": "error", "message": "No indexes found. Run `python ingest.py --index <name>` first."})}\n\n'
+            return
+
+        try:
+            Settings.embed_model = OllamaEmbedding(model_name=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+            Settings.llm = Ollama(model=LLM_MODEL, base_url=OLLAMA_BASE_URL, request_timeout=120.0)
+
+            loaded = []
+            for name in index_names:
+                try:
+                    loaded.append((name, build_retriever(name)))
+                except FileNotFoundError:
+                    pass
+
+            if not loaded:
+                yield f'data: {json.dumps({"type": "error", "message": "No indexes could be loaded."})}\n\n'
+                return
+
+            retriever = (
+                loaded[0][1] if len(loaded) == 1
+                else MultiIndexRetriever(retrievers=loaded, top_k=TOP_K)
+            )
+
+            source_nodes = retriever.retrieve(req.question)
+            snippets = extract_snippets(source_nodes)
+            yield f'data: {json.dumps({"type": "sources", "snippets": snippets})}\n\n'
+
+            synthesizer = get_response_synthesizer(llm=Settings.llm, streaming=True)
+            streaming_resp = synthesizer.synthesize(req.question, nodes=source_nodes)
+
+            for token in streaming_resp.response_gen:
+                yield f'data: {json.dumps({"type": "token", "text": token})}\n\n'
+
+            yield f'data: {json.dumps({"type": "done"})}\n\n'
+
+        except Exception as e:
+            yield f'data: {json.dumps({"type": "error", "message": str(e)})}\n\n'
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 server = Server("rag-pipeline")
