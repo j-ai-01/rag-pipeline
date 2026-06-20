@@ -29,8 +29,11 @@ from typing import List, Optional
 
 import chromadb
 from llama_index.core import VectorStoreIndex, StorageContext, Settings
+from llama_index.core.agent import ReActAgent
+from llama_index.core.prompts import PromptTemplate
 from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core.retrievers import AutoMergingRetriever
+from llama_index.core.tools import RetrieverTool
 from llama_index.core.schema import NodeWithScore
 from llama_index.core.storage.docstore import SimpleDocumentStore
 from llama_index.embeddings.ollama import OllamaEmbedding
@@ -133,9 +136,25 @@ def build_retriever(index_name: str) -> AutoMergingRetriever:
     )
 
 
+_DETAILED_QA_PROMPT = PromptTemplate(
+    "You are a thorough assistant. Using ONLY the context below, write a comprehensive, "
+    "well-structured answer. Cover every relevant fact, detail, and nuance. "
+    "Use markdown formatting (headers, bullet points, bold). Be as detailed as necessary.\n\n"
+    "Context:\n---------------------\n{context_str}\n---------------------\n\n"
+    "Question: {query_str}\n\nAnswer:"
+)
+
+_AGENT_SYSTEM_PROMPT = (
+    "You are a helpful knowledge base assistant. "
+    "Use the knowledge_base tool to search for information when the user asks a question that requires looking up specific facts from documents. "
+    "Provide comprehensive, detailed answers using markdown formatting with headers and bullet points — cover all relevant details. "
+    "For greetings or conversational messages that don't require document lookup, respond naturally without using the tool."
+)
+
+
 def build_query_engine(index_names: List[str]) -> RetrieverQueryEngine:
     Settings.embed_model = OllamaEmbedding(model_name=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
-    Settings.llm = Ollama(model=LLM_MODEL, base_url=OLLAMA_BASE_URL, request_timeout=120.0)
+    Settings.llm = Ollama(model=LLM_MODEL, base_url=OLLAMA_BASE_URL, request_timeout=120.0, context_window=8192)
 
     loaded = []
     for name in index_names:
@@ -152,7 +171,47 @@ def build_query_engine(index_names: List[str]) -> RetrieverQueryEngine:
     else:
         retriever = MultiIndexRetriever(retrievers=loaded, top_k=TOP_K)
 
-    return RetrieverQueryEngine.from_args(retriever=retriever, llm=Settings.llm)
+    return RetrieverQueryEngine.from_args(
+        retriever=retriever,
+        llm=Settings.llm,
+        text_qa_template=_DETAILED_QA_PROMPT,
+    )
+
+
+def build_agent(index_names: List[str]) -> ReActAgent:
+    Settings.embed_model = OllamaEmbedding(model_name=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+    Settings.llm = Ollama(model=LLM_MODEL, base_url=OLLAMA_BASE_URL, request_timeout=120.0, context_window=8192)
+
+    loaded = []
+    for name in index_names:
+        try:
+            loaded.append((name, build_retriever(name)))
+        except FileNotFoundError as e:
+            print(f"Warning: {e}  Skipping index '{name}'.")
+
+    if not loaded:
+        raise RuntimeError("No indexes could be loaded.")
+
+    retriever = (
+        loaded[0][1] if len(loaded) == 1
+        else MultiIndexRetriever(retrievers=loaded, top_k=TOP_K)
+    )
+
+    kb_tool = RetrieverTool.from_defaults(
+        retriever=retriever,
+        description=(
+            "Searches the knowledge base for relevant information from indexed documents. "
+            "Use this for any question that requires looking up specific information."
+        ),
+    )
+
+    return ReActAgent.from_tools(
+        [kb_tool],
+        llm=Settings.llm,
+        system_prompt=_AGENT_SYSTEM_PROMPT,
+        verbose=False,
+        max_iterations=5,
+    )
 
 
 def run_query(question: str, index_names: Optional[List[str]] = None) -> None:

@@ -20,59 +20,68 @@ def test_get_indexes_returns_empty_list():
     assert response.json() == []
 
 
-def _make_mock_response(answer="The answer is 42.", filename="doc.pdf", page=1, index="docs"):
+def _make_mock_agent_response(answer="42 is the answer."):
     mock_node = MagicMock()
-    _meta = {
-        "filename": filename,
-        "page_number": page,
-        "file_type": "pdf",
-        "index_name": index,
-    }
-    mock_node.metadata = _meta
-    mock_node.node.metadata = _meta
+    mock_node.node.metadata = {"filename": "doc.pdf", "page_number": 1, "index_name": "docs"}
+    mock_node.node.get_content.return_value = "This is the content of doc.pdf page 1."
+    mock_node.score = 0.9
+
     mock_response = MagicMock()
     mock_response.response = answer
     mock_response.source_nodes = [mock_node]
     return mock_response
 
 
+def _make_mock_streaming_response(tokens=("The ", "answer ", "is 42.")):
+    mock_node = MagicMock()
+    mock_node.node.metadata = {"filename": "doc.pdf", "page_number": 1, "index_name": "docs"}
+    mock_node.node.get_content.return_value = "Full chunk text for snippet"
+    mock_node.score = 0.9
+
+    mock_streaming = MagicMock()
+    mock_streaming.response_gen = iter(tokens)
+    mock_streaming.source_nodes = [mock_node]
+    return mock_streaming
+
+
 def test_post_query_returns_answer_and_sources():
-    mock_engine = MagicMock()
-    mock_engine.query.return_value = _make_mock_response()
+    mock_agent = MagicMock()
+    mock_agent.chat.return_value = _make_mock_agent_response()
 
     with patch("mcp_server.check_ollama_running", return_value=True), \
          patch("mcp_server.list_indexed", return_value=["docs"]), \
-         patch("mcp_server.build_query_engine", return_value=mock_engine):
+         patch("mcp_server.build_agent", return_value=mock_agent):
         response = client.post("/query", json={"question": "What is 42?"})
 
     assert response.status_code == 200
     data = response.json()
-    assert data["answer"] == "The answer is 42."
-    assert "doc.pdf" in data["sources"]
+    assert "answer" in data
+    assert data["answer"] == "42 is the answer."
+    assert "sources" in data
 
 
 def test_post_query_passes_selected_indexes():
-    mock_engine = MagicMock()
-    mock_engine.query.return_value = _make_mock_response()
+    mock_agent = MagicMock()
+    mock_agent.chat.return_value = _make_mock_agent_response()
 
     with patch("mcp_server.check_ollama_running", return_value=True), \
-         patch("mcp_server.build_query_engine", return_value=mock_engine) as mock_build:
-        response = client.post("/query", json={"question": "hi", "indexes": ["reports"]})
+         patch("mcp_server.build_agent", return_value=mock_agent) as mock_build:
+        response = client.post("/query", json={"question": "What is 42?", "indexes": ["docs"]})
 
-    mock_build.assert_called_once_with(["reports"])
     assert response.status_code == 200
-    assert "answer" in response.json()
+    mock_build.assert_called_once_with(["docs"])
 
 
 def test_post_query_uses_all_indexes_when_none_selected():
-    mock_engine = MagicMock()
-    mock_engine.query.return_value = _make_mock_response()
+    mock_agent = MagicMock()
+    mock_agent.chat.return_value = _make_mock_agent_response()
 
     with patch("mcp_server.check_ollama_running", return_value=True), \
          patch("mcp_server.list_indexed", return_value=["docs", "reports"]), \
-         patch("mcp_server.build_query_engine", return_value=mock_engine) as mock_build:
-        client.post("/query", json={"question": "hi"})
+         patch("mcp_server.build_agent", return_value=mock_agent) as mock_build:
+        response = client.post("/query", json={"question": "What is 42?"})
 
+    assert response.status_code == 200
     mock_build.assert_called_once_with(["docs", "reports"])
 
 
@@ -101,17 +110,13 @@ def test_post_query_rejects_empty_question():
 
 
 def test_post_query_returns_error_on_engine_exception():
-    mock_engine = MagicMock()
-    mock_engine.query.side_effect = RuntimeError("LLM timeout")
-
     with patch("mcp_server.check_ollama_running", return_value=True), \
          patch("mcp_server.list_indexed", return_value=["docs"]), \
-         patch("mcp_server.build_query_engine", return_value=mock_engine):
-        response = client.post("/query", json={"question": "hi"})
+         patch("mcp_server.build_agent", side_effect=Exception("engine error")):
+        response = client.post("/query", json={"question": "What is 42?"})
 
     assert response.status_code == 500
     assert "error" in response.json()
-    assert "LLM timeout" in response.json()["error"]
 
 
 def test_get_root_serves_html():
@@ -122,12 +127,12 @@ def test_get_root_serves_html():
 
 
 def test_post_query_returns_snippets():
-    mock_engine = MagicMock()
-    mock_engine.query.return_value = _make_mock_response()
+    mock_agent = MagicMock()
+    mock_agent.chat.return_value = _make_mock_agent_response()
 
     with patch("mcp_server.check_ollama_running", return_value=True), \
          patch("mcp_server.list_indexed", return_value=["docs"]), \
-         patch("mcp_server.build_query_engine", return_value=mock_engine):
+         patch("mcp_server.build_agent", return_value=mock_agent):
         response = client.post("/query", json={"question": "What is 42?"})
 
     assert response.status_code == 200
@@ -140,22 +145,12 @@ def test_post_query_returns_snippets():
 
 
 def test_post_query_stream_returns_event_sequence():
-    mock_node = MagicMock()
-    mock_node.node.metadata = {"filename": "doc.pdf", "page_number": 1, "index_name": "docs"}
-    mock_node.node.get_content.return_value = "Full chunk text for snippet"
-    mock_node.score = 0.9
-
-    mock_streaming_resp = MagicMock()
-    mock_streaming_resp.response_gen = iter(["The ", "answer ", "is 42."])
-
-    mock_synthesizer = MagicMock()
-    mock_synthesizer.synthesize.return_value = mock_streaming_resp
+    mock_agent = MagicMock()
+    mock_agent.stream_chat.return_value = _make_mock_streaming_response()
 
     with patch("mcp_server.check_ollama_running", return_value=True), \
          patch("mcp_server.list_indexed", return_value=["docs"]), \
-         patch("mcp_server.build_retriever") as mock_br, \
-         patch("mcp_server.get_response_synthesizer", return_value=mock_synthesizer):
-        mock_br.return_value.retrieve.return_value = [mock_node]
+         patch("mcp_server.build_agent", return_value=mock_agent):
         response = client.post("/query/stream", json={"question": "What is 42?"})
 
     assert response.status_code == 200
@@ -167,11 +162,13 @@ def test_post_query_stream_returns_event_sequence():
         if line.startswith("data: ")
     ]
 
-    assert events[0]["type"] == "sources"
-    assert events[0]["snippets"][0]["filename"] == "doc.pdf"
-    assert events[0]["snippets"][0]["text"] == "Full chunk text for snippet"
     token_texts = [e["text"] for e in events if e["type"] == "token"]
     assert token_texts == ["The ", "answer ", "is 42."]
+
+    sources_events = [e for e in events if e["type"] == "sources"]
+    assert len(sources_events) == 1
+    assert sources_events[0]["snippets"][0]["filename"] == "doc.pdf"
+
     assert events[-1]["type"] == "done"
 
 

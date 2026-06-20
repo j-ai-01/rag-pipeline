@@ -35,16 +35,13 @@ from mcp.server.sse import SseServerTransport
 from mcp import types
 
 from llama_index.core import Settings
-from llama_index.embeddings.ollama import OllamaEmbedding
-from llama_index.llms.ollama import Ollama
-from llama_index.core.response_synthesizers import get_response_synthesizer
 from llama_index.core.schema import NodeWithScore
-from utils.multi_index_retriever import MultiIndexRetriever
+from llama_index.embeddings.ollama import OllamaEmbedding
 
 from pydantic import BaseModel, field_validator
 
-from config import EMBED_MODEL, OLLAMA_BASE_URL, LLM_MODEL, TOP_K
-from query import list_indexed, build_retriever, build_query_engine, format_sources
+from config import EMBED_MODEL, OLLAMA_BASE_URL
+from query import list_indexed, build_retriever, build_agent, format_sources
 from utils.ollama_check import check_ollama_running
 
 app = FastAPI(title="RAG Pipeline MCP Server")
@@ -95,24 +92,17 @@ def extract_snippets(source_nodes: List[NodeWithScore]) -> List[dict]:
 @app.post("/query")
 async def query_endpoint(req: QueryRequest):
     if not check_ollama_running():
-        return JSONResponse(
-            status_code=503,
-            content={"error": "Ollama is not running. Start it with: ollama serve"},
-        )
-
+        return JSONResponse(status_code=503, content={"error": "Ollama is not running. Start it with: ollama serve"})
     index_names = req.indexes if req.indexes is not None else list_indexed()
     if not index_names:
-        return JSONResponse(
-            status_code=404,
-            content={"error": "No indexes found. Run `python ingest.py --index <name>` first."},
-        )
-
+        return JSONResponse(status_code=404, content={"error": "No indexes found. Run `python ingest.py --index <name>` first."})
     try:
-        engine = build_query_engine(index_names)
-        response = engine.query(req.question)
-        answer = response.response or "Could not generate a summary. See sources below."
-        sources = format_sources(response.source_nodes)
-        snippets = extract_snippets(response.source_nodes)
+        agent = build_agent(index_names)
+        response = agent.chat(req.question)
+        answer = response.response or "Could not generate a response."
+        source_nodes = response.source_nodes
+        sources = format_sources(source_nodes)
+        snippets = extract_snippets(source_nodes)
         return {"answer": answer, "sources": sources, "snippets": snippets}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -135,34 +125,16 @@ async def query_stream(req: QueryRequest):
             return
 
         try:
-            Settings.embed_model = OllamaEmbedding(model_name=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
-            Settings.llm = Ollama(model=LLM_MODEL, base_url=OLLAMA_BASE_URL, request_timeout=120.0)
+            agent = build_agent(index_names)
+            streaming_response = agent.stream_chat(req.question)
 
-            loaded = []
-            for name in index_names:
-                try:
-                    loaded.append((name, build_retriever(name)))
-                except FileNotFoundError:
-                    pass
-
-            if not loaded:
-                yield _sse({"type": "error", "message": "No indexes could be loaded."})
-                return
-
-            retriever = (
-                loaded[0][1] if len(loaded) == 1
-                else MultiIndexRetriever(retrievers=loaded, top_k=TOP_K)
-            )
-
-            source_nodes = retriever.retrieve(req.question)
-            snippets = extract_snippets(source_nodes)
-            yield _sse({"type": "sources", "snippets": snippets})
-
-            synthesizer = get_response_synthesizer(llm=Settings.llm, streaming=True)
-            streaming_resp = synthesizer.synthesize(req.question, nodes=source_nodes)
-
-            for token in streaming_resp.response_gen:
+            for token in streaming_response.response_gen:
                 yield _sse({"type": "token", "text": token})
+
+            source_nodes = streaming_response.source_nodes
+            if source_nodes:
+                snippets = extract_snippets(source_nodes)
+                yield _sse({"type": "sources", "snippets": snippets})
 
             yield _sse({"type": "done"})
 
