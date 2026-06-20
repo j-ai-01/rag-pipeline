@@ -35,8 +35,11 @@ from mcp import types
 from llama_index.core import Settings
 from llama_index.embeddings.ollama import OllamaEmbedding
 
+from pydantic import BaseModel
+
 from config import EMBED_MODEL, OLLAMA_BASE_URL
-from query import list_indexed, build_retriever
+from query import list_indexed, build_retriever, build_query_engine, format_sources
+from utils.ollama_check import check_ollama_running
 
 app = FastAPI(title="RAG Pipeline MCP Server")
 
@@ -44,6 +47,30 @@ app = FastAPI(title="RAG Pipeline MCP Server")
 @app.get("/indexes")
 async def get_indexes() -> List[str]:
     return list_indexed()
+
+
+class QueryRequest(BaseModel):
+    question: str
+    indexes: Optional[List[str]] = None
+
+
+@app.post("/query")
+async def query_endpoint(req: QueryRequest):
+    if not check_ollama_running():
+        return {"error": "Ollama is not running. Start it with: ollama serve"}
+
+    index_names = req.indexes if req.indexes else list_indexed()
+    if not index_names:
+        return {"error": "No indexes found. Run `python ingest.py --index <name>` first."}
+
+    try:
+        engine = build_query_engine(index_names)
+        response = engine.query(req.question)
+        answer = response.response or "Could not generate a summary. See sources below."
+        sources = format_sources(response.source_nodes)
+        return {"answer": answer, "sources": sources}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 server = Server("rag-pipeline")
