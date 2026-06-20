@@ -334,6 +334,9 @@
       }
     }
 
+    // ── Session ────────────────────────────────────────────────────────────
+    const SESSION_ID = crypto.randomUUID();
+
     // ── Search ─────────────────────────────────────────────────────────────
     const questionEl = document.getElementById('question');
     const askBtn     = document.getElementById('ask-btn');
@@ -367,6 +370,7 @@
           body: JSON.stringify({
             question,
             indexes: selected.size > 0 ? [...selected] : null,
+            session_id: SESSION_ID,
           }),
         });
 

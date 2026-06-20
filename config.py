@@ -6,7 +6,7 @@ INDEXES_DIR = BASE_DIR / "indexes"
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 EMBED_MODEL = "nomic-embed-text"
-LLM_MODEL = "llama3"
+LLM_MODEL = "gemma4"
 VISION_MODEL = "llava"
 
 PARENT_CHUNK_SIZE = 1024

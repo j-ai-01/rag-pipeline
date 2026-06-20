@@ -25,8 +25,9 @@ class _StderrFilter(io.TextIOWrapper):
 
 sys.stderr = _StderrFilter(io.BytesIO())
 
+import uuid
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -46,6 +47,9 @@ from utils.ollama_check import check_ollama_running
 
 app = FastAPI(title="RAG Pipeline MCP Server")
 
+# session_id -> ReActAgent (lives for the lifetime of the server process)
+_sessions: Dict[str, Any] = {}
+
 
 @app.get("/")
 async def serve_ui():
@@ -60,6 +64,7 @@ async def get_indexes() -> List[str]:
 class QueryRequest(BaseModel):
     question: str
     indexes: Optional[List[str]] = None
+    session_id: Optional[str] = None
 
     @field_validator("question")
     @classmethod
@@ -67,6 +72,13 @@ class QueryRequest(BaseModel):
         if not v.strip():
             raise ValueError("question must not be empty")
         return v.strip()
+
+
+def _get_or_create_agent(req: QueryRequest, index_names: List[str]):
+    sid = req.session_id or str(uuid.uuid4())
+    if sid not in _sessions:
+        _sessions[sid] = build_agent(index_names)
+    return sid, _sessions[sid]
 
 
 def extract_snippets(source_nodes: List[NodeWithScore]) -> List[dict]:
@@ -97,15 +109,26 @@ async def query_endpoint(req: QueryRequest):
     if not index_names:
         return JSONResponse(status_code=404, content={"error": "No indexes found. Run `python ingest.py --index <name>` first."})
     try:
-        agent = build_agent(index_names)
+        sid, agent = _get_or_create_agent(req, index_names)
         response = agent.chat(req.question)
         answer = response.response or "Could not generate a response."
-        source_nodes = response.source_nodes
+        source_nodes = _nodes_from_agent_response(response)
         sources = format_sources(source_nodes)
         snippets = extract_snippets(source_nodes)
-        return {"answer": answer, "sources": sources, "snippets": snippets}
+        return {"answer": answer, "sources": sources, "snippets": snippets, "session_id": sid}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+def _nodes_from_agent_response(response) -> List[NodeWithScore]:
+    nodes = []
+    for source in getattr(response, "sources", []):
+        raw = source.raw_output
+        if isinstance(raw, list):
+            nodes.extend(raw)
+        elif hasattr(raw, "source_nodes"):
+            nodes.extend(raw.source_nodes)
+    return nodes
 
 
 def _sse(event: dict) -> str:
@@ -125,13 +148,13 @@ async def query_stream(req: QueryRequest):
             return
 
         try:
-            agent = build_agent(index_names)
+            _sid, agent = _get_or_create_agent(req, index_names)
             streaming_response = agent.stream_chat(req.question)
 
             for token in streaming_response.response_gen:
                 yield _sse({"type": "token", "text": token})
 
-            source_nodes = streaming_response.source_nodes
+            source_nodes = _nodes_from_agent_response(streaming_response)
             if source_nodes:
                 snippets = extract_snippets(source_nodes)
                 yield _sse({"type": "sources", "snippets": snippets})
