@@ -66,9 +66,10 @@ def collect_files(data_dir: Path) -> List[Path]:
 
 def build_documents(
     files: List[Path], ingested: dict
-) -> Tuple[List[Document], dict]:
+) -> Tuple[List[Document], dict, set]:
     documents = []
     updated_ingested = dict(ingested)
+    updated_filenames: set = set()
 
     for path in files:
         h = file_hash(path)
@@ -76,7 +77,11 @@ def build_documents(
             print(f"  [skip] {path.name} — already indexed")
             continue
 
-        print(f"  [ingest] {path.name}")
+        if path.name in ingested:
+            updated_filenames.add(path.name)
+            print(f"  [update] {path.name} — content changed, re-indexing")
+        else:
+            print(f"  [ingest] {path.name}")
         ext = path.suffix.lower()
 
         try:
@@ -119,7 +124,7 @@ def build_documents(
         except Exception as e:
             print(f"  [error] Could not process {path.name}: {e}")
 
-    return documents, updated_ingested
+    return documents, updated_ingested, updated_filenames
 
 
 def _wipe_index(paths: IndexPaths) -> None:
@@ -149,7 +154,7 @@ def run_ingestion(index_name: str = "default", reindex: bool = False) -> None:
     ingested = load_ingested(paths.ingest_log)
     print(f"Found {len(files)} file(s). Checking for new files...")
 
-    documents, updated_ingested = build_documents(files, ingested)
+    documents, updated_ingested, updated_filenames = build_documents(files, ingested)
 
     if not documents:
         print("No new files to ingest. Everything is up to date.")
@@ -177,6 +182,14 @@ def run_ingestion(index_name: str = "default", reindex: bool = False) -> None:
     paths.chroma_dir.mkdir(parents=True, exist_ok=True)
     chroma_client = make_chroma_client(str(paths.chroma_dir))
     chroma_collection = chroma_client.get_or_create_collection(paths.collection_name)
+
+    if updated_filenames:
+        print(f"Removing stale vectors for: {', '.join(updated_filenames)}...")
+        for fname in updated_filenames:
+            stale = chroma_collection.get(where={"filename": fname})
+            if stale["ids"]:
+                chroma_collection.delete(ids=stale["ids"])
+
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     storage_context = StorageContext.from_defaults(
         docstore=docstore,
@@ -192,6 +205,11 @@ def run_ingestion(index_name: str = "default", reindex: bool = False) -> None:
     if paths.leaf_nodes_path.exists():
         with open(paths.leaf_nodes_path, "rb") as f:
             existing_leaf_nodes = pickle.load(f)
+    if updated_filenames:
+        existing_leaf_nodes = [
+            n for n in existing_leaf_nodes
+            if n.metadata.get("filename") not in updated_filenames
+        ]
     all_leaf_nodes = existing_leaf_nodes + leaf_nodes
     with open(paths.leaf_nodes_path, "wb") as f:
         pickle.dump(all_leaf_nodes, f)

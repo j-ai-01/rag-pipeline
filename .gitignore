@@ -1,22 +1,58 @@
+# ── Python ────────────────────────────────────────────────
 venv/
 __pycache__/
 *.pyc
 *.pyo
-.pytest_cache/
-chroma_db/
-.ingested_files.json
+*.pyd
 *.egg-info/
-.DS_Store
-docstore.json
-bm25_index.pkl
-leaf_nodes.pkl
+dist/
+build/
+.eggs/
 
-# Per-index artifacts (auto-generated under indexes/<name>/)
+# ── Test / coverage ───────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# ── Environment ───────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── OS ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Editor ────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Tooling (local dev, not part of the project) ──────────
+.claude/
+.superpowers/
+docs/superpowers/
+
+# ── Index artifacts (auto-generated, never commit) ────────
 indexes/*/chroma_db/
 indexes/*/docstore.json
+indexes/*/bm25_index.pkl/
 indexes/*/bm25_index.pkl
 indexes/*/leaf_nodes.pkl
 indexes/*/.ingested_files.json
 
-# Never commit user data
+# ── User data (keep out of version control) ───────────────
 indexes/*/data/
+
+# ── Legacy root-level artifacts (pre-multi-index layout) ──
+chroma_db/
+docstore.json
+bm25_index.pkl
+leaf_nodes.pkl
+.ingested_files.json
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+logs/

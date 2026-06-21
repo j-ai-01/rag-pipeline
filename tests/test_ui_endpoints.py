@@ -20,27 +20,31 @@ def test_get_indexes_returns_empty_list():
     assert response.json() == []
 
 
-def _make_mock_agent_response(answer="42 is the answer."):
+def _make_mock_node():
     mock_node = MagicMock()
     mock_node.node.metadata = {"filename": "doc.pdf", "page_number": 1, "index_name": "docs"}
     mock_node.node.get_content.return_value = "This is the content of doc.pdf page 1."
     mock_node.score = 0.9
+    return mock_node
+
+
+def _make_mock_agent_response(answer="42 is the answer."):
+    mock_tool_output = MagicMock()
+    mock_tool_output.raw_output = [_make_mock_node()]
 
     mock_response = MagicMock()
     mock_response.response = answer
-    mock_response.source_nodes = [mock_node]
+    mock_response.sources = [mock_tool_output]
     return mock_response
 
 
 def _make_mock_streaming_response(tokens=("The ", "answer ", "is 42.")):
-    mock_node = MagicMock()
-    mock_node.node.metadata = {"filename": "doc.pdf", "page_number": 1, "index_name": "docs"}
-    mock_node.node.get_content.return_value = "Full chunk text for snippet"
-    mock_node.score = 0.9
+    mock_tool_output = MagicMock()
+    mock_tool_output.raw_output = [_make_mock_node()]
 
     mock_streaming = MagicMock()
     mock_streaming.response_gen = iter(tokens)
-    mock_streaming.source_nodes = [mock_node]
+    mock_streaming.sources = [mock_tool_output]
     return mock_streaming
 
 
@@ -123,7 +127,7 @@ def test_get_root_serves_html():
     response = client.get("/")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert "RAG Search" in response.text
+    assert "Recall" in response.text
 
 
 def test_post_query_returns_snippets():

@@ -46,7 +46,7 @@ def test_build_documents_skips_already_ingested(tmp_path):
     from utils.file_hash import file_hash
     h = file_hash(f)
     ingested = {"report.pdf": h}
-    docs, updated = build_documents([f], ingested)
+    docs, updated, _ = build_documents([f], ingested)
     assert docs == []
     assert updated == ingested
 

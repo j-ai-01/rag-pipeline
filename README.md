@@ -1,60 +1,77 @@
-# RAG Pipeline
+# Recall
 
-A fully local Retrieval-Augmented Generation (RAG) pipeline with an agentic query engine, streaming web UI, and MCP server. Organise documents into named indexes, query them via browser or API, and connect to Claude Desktop / Claude Code via MCP — no cloud services required.
+A fully local, privacy-first Retrieval-Augmented Generation (RAG) engine. Drop documents into named indexes, ask questions in a browser or via API, and connect any AI assistant via MCP — no cloud, no SaaS, no data leaving your machine.
 
-## Architecture
+Designed to scale: one index or a hundred, one user or a team, personal notes or company-wide knowledge bases.
+
+---
+
+## How It Works
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                     mcp_server.py                       │
 │                                                         │
-│  GET  /          →  Browser UI (ui.html)                │
+│  GET  /          →  Browser UI                          │
 │  GET  /indexes   →  List available indexes              │
 │  POST /query     →  Single-shot answer (JSON)           │
 │  POST /query/stream → Streaming answer (SSE)            │
-│  GET  /sse       →  MCP SSE transport (Claude Desktop)  │
+│  GET  /sse       →  MCP SSE transport                   │
 │  POST /messages  →  MCP tool calls                      │
 └─────────────────────────────────────────────────────────┘
          │                          │
     ReActAgent                  MCP Tools
-   (gemma4 local)           (list_indexes, query_rag)
+  (any Ollama LLM)          (list_indexes, query_rag)
          │                          │
    RetrieverTool              build_retriever()
-   (KB lookup)               (raw chunks → Claude)
+   (KB lookup)               (raw chunks → your LLM)
          │
    Hybrid Retrieval
    (BM25 + vector + AutoMerging)
 ```
 
-**Agent flow:** The model (`gemma4`) sees your question, decides whether the knowledge base is needed, calls it as a tool if so, then synthesises a comprehensive answer. Greetings and general questions are handled directly without touching the KB.
+**Agent flow:** The model sees your question, decides whether the knowledge base needs to be searched, calls it as a tool if so, then synthesises a comprehensive answer. Greetings and general questions are handled directly without touching documents.
 
-**Session memory:** Each browser tab keeps its own `session_id`. The agent accumulates full conversation history for the duration of the server process — follow-up questions, pronoun references, and context all work.
+**Session memory:** Each browser tab gets its own `session_id`. The agent carries full conversation history for the lifetime of the server — follow-up questions, pronoun references, and multi-turn context all work.
+
+---
 
 ## Requirements
 
 - Python 3.10+
 - [Ollama](https://ollama.com) installed and running
 
+Pull the models you need:
+
 ```bash
-ollama pull nomic-embed-text   # embeddings
-ollama pull gemma4             # agent LLM (recommended — strong instruction following)
+ollama pull nomic-embed-text   # embeddings (required)
+ollama pull gemma4             # LLM for the agent (recommended)
 ollama pull llava              # image descriptions (optional)
 ```
 
-## Setup
+You can swap any Ollama-compatible LLM — see [Configuration](#configuration).
+
+---
+
+## Installation
 
 ```bash
+git clone <this-repo>
+cd recall
+
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+---
 
 ## Quick Start
 
 ```bash
-# 1. Add documents to an index
+# 1. Create an index and add documents
 mkdir -p indexes/my-docs/data
-cp your-documents/* indexes/my-docs/data/
+cp /path/to/your/documents/* indexes/my-docs/data/
 
 # 2. Ingest
 python ingest.py --index my-docs
@@ -62,159 +79,229 @@ python ingest.py --index my-docs
 # 3. Start the server
 python mcp_server.py
 
-# 4. Open the UI
+# 4. Open the browser UI
 open http://localhost:8765
 ```
 
+That's it. Ask questions in the browser.
+
+---
+
+## Working with Indexes
+
+Indexes are independent knowledge bases. Create as many as you need — by topic, team, project, or client.
+
+```bash
+# Create and ingest multiple indexes
+mkdir -p indexes/finance/data   && cp finance-reports/*  indexes/finance/data/
+mkdir -p indexes/legal/data     && cp contracts/*         indexes/legal/data/
+mkdir -p indexes/engineering/data && cp tech-docs/*       indexes/engineering/data/
+
+python ingest.py --index finance
+python ingest.py --index legal
+python ingest.py --index engineering
+
+# Re-ingest after adding or changing files
+python ingest.py --index finance --reindex
+
+# Delete an index entirely
+rm -rf indexes/finance
+```
+
+### Index directory layout
+
+```
+indexes/
+  <name>/
+    data/                   ← your documents go here (you manage this)
+    chroma_db/              ← vector store        (auto-generated)
+    docstore.json           ← node store          (auto-generated)
+    bm25_index.pkl/         ← keyword index       (auto-generated)
+    leaf_nodes.pkl          ← retrieval cache     (auto-generated)
+    .ingested_files.json    ← change tracking     (auto-generated)
+```
+
+Only `data/` needs to be managed. Everything else is generated on ingest.
+
+### Supported file types
+
+| Type  | Extensions |
+|-------|-----------|
+| Text  | `.txt`, `.md` |
+| PDF   | `.pdf` |
+| Word  | `.docx` |
+| Image | `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp` |
+
+---
+
 ## Browser UI
 
-Open `http://localhost:8765` after starting `mcp_server.py`.
+Open `http://localhost:8765` after starting the server.
 
-Features:
 - **Streaming answers** — tokens appear as the model generates them
-- **Agent-driven retrieval** — model decides when to search the KB; greetings and off-topic questions are answered directly
-- **Session memory** — the agent remembers the full conversation within a browser tab
+- **Agent-driven retrieval** — model decides when to search; small talk skips the KB
+- **Session memory** — full conversation context within a browser tab
 - **Source snippets** — retrieved chunks shown with preview and "show more" toggle
+- **Index filter chips** — click to target specific indexes; none selected = search all
 - **Chat history** — previous Q&As stack above, dimmed
 - **Markdown rendering** — headers, bullet points, code blocks (syntax-highlighted), Mermaid diagrams
 - **Light / dark mode** — toggle in the top bar, saved to `localStorage`
-- **Index filter chips** — click to query specific indexes; none selected = search all
 
-## Connect to Claude Desktop (MCP)
+---
 
-Add the following to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+## CLI Queries
+
+```bash
+# Query a single index
+python query.py --index finance "What was Q3 revenue?"
+
+# Query multiple indexes at once
+python query.py --index finance,legal "Who signed the budget approval?"
+
+# Query everything (no --index flag = searches all indexes)
+python query.py "What is the leave policy?"
+```
+
+---
+
+## Connect via MCP
+
+Recall exposes an MCP server over SSE. Any MCP-compatible AI client can connect to it and search your knowledge base as a tool.
+
+### Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```json
 {
   "mcpServers": {
-    "rag-pipeline": {
+    "recall": {
       "url": "http://localhost:8765/sse"
     }
   }
 }
 ```
 
-Make sure `python mcp_server.py` is running first. Claude Desktop will then have access to two tools:
+Restart Claude Desktop. It will have access to:
 
 | Tool | Description |
 |------|-------------|
 | `list_indexes` | List all ingested indexes |
-| `query_rag` | Search the KB and return raw chunks (Claude synthesises the answer) |
+| `query_rag` | Search the knowledge base and return relevant passages |
 
-## Connect to Claude Code (MCP)
-
-Add to your project's `.mcp.json` or run:
+### Claude Code
 
 ```bash
-claude mcp add rag-pipeline --transport sse http://localhost:8765/sse
+claude mcp add recall --transport sse http://localhost:8765/sse
 ```
 
-## Working with Multiple Indexes
+### Any other MCP client
 
-```bash
-# Create indexes
-mkdir -p indexes/finance/data && cp finance-reports/* indexes/finance/data/
-python ingest.py --index finance
+Point your client at `http://localhost:8765/sse` (SSE transport) or `http://localhost:8765/messages` (POST endpoint for tool calls).
 
-mkdir -p indexes/hr/data && cp hr-policies/* indexes/hr/data/
-python ingest.py --index hr
-
-# CLI queries
-python query.py --index finance "What was Q3 revenue?"
-python query.py --index finance,hr "Who approved the budget?"
-python query.py "What is the leave policy?"   # searches all indexes
-```
+---
 
 ## API Reference
 
+### `GET /indexes`
+
+Returns a list of all ingested index names.
+
+```bash
+curl http://localhost:8765/indexes
+# ["finance", "legal", "engineering"]
+```
+
 ### `POST /query`
 
-Single-shot Q&A. Uses the ReActAgent — model decides whether to call the KB.
+Single-shot Q&A. The agent decides whether to call the KB.
 
 ```bash
 curl -X POST http://localhost:8765/query \
   -H "Content-Type: application/json" \
-  -d '{"question": "What is Jai career?", "indexes": ["docs"], "session_id": "abc123"}'
+  -d '{
+    "question": "What were the key risks identified in the Q3 audit?",
+    "indexes": ["finance", "legal"],
+    "session_id": "user-abc-tab-1"
+  }'
 ```
 
-Response:
 ```json
 {
   "answer": "...",
-  "sources": "  - doc.pdf",
-  "snippets": [{"filename": "doc.pdf", "page": 1, "index": "docs", "text": "..."}],
-  "session_id": "abc123"
+  "sources": "  - audit-q3.pdf (page 4) [finance]",
+  "snippets": [
+    {
+      "filename": "audit-q3.pdf",
+      "page": 4,
+      "index": "finance",
+      "text": "..."
+    }
+  ],
+  "session_id": "user-abc-tab-1"
 }
 ```
 
+- `indexes` — optional; omit to search all indexes
+- `session_id` — optional; omit to start a fresh session (one is returned in the response)
+
 ### `POST /query/stream`
 
-Same as `/query` but returns `text/event-stream`. Event order:
+Same as `/query` but streams tokens as they are generated (`text/event-stream`).
+
+Event sequence:
 
 ```
-data: {"type": "token", "text": "..."}   ← one per token during generation
+data: {"type": "token",   "text": "..."}      ← one per token
 data: {"type": "sources", "snippets": [...]}  ← after generation (if KB was used)
 data: {"type": "done"}
-data: {"type": "error", "message": "..."}   ← instead of above on failure
+data: {"type": "error",   "message": "..."}   ← on failure (replaces above)
 ```
 
-## CLI Reference
+---
 
-### `ingest.py`
+## Configuration
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--index <name>` | `default` | Name of the index to ingest into |
-| `--reindex` | off | Wipe and re-ingest all files in this index |
-
-### `query.py`
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--index <names>` | all indexed | Comma-separated index names to query |
-| `question` | required | The question (positional, multi-word OK) |
-
-## Configuration (`config.py`)
+Edit `config.py` to customise the engine:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `LLM_MODEL` | `gemma4` | Ollama model for the agent |
-| `EMBED_MODEL` | `nomic-embed-text` | Embedding model |
-| `TOP_K` | `5` | Chunks retrieved per query |
+| `LLM_MODEL` | `gemma4` | Ollama model used by the agent |
+| `EMBED_MODEL` | `nomic-embed-text` | Embedding model for vector search |
+| `TOP_K` | `5` | Number of chunks retrieved per query |
 | `PARENT_CHUNK_SIZE` | `1024` | Parent chunk size (tokens) |
-| `CHILD_CHUNK_SIZE` | `256` | Child chunk size for auto-merging |
-| `HYBRID_ALPHA` | `0.5` | BM25 vs vector blend (0 = BM25 only, 1 = vector only) |
+| `CHILD_CHUNK_SIZE` | `256` | Child chunk size for auto-merging retrieval |
+| `HYBRID_ALPHA` | `0.5` | BM25 vs vector blend (`0` = BM25 only, `1` = vector only) |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 
-## Index Directory Structure
+**Swap the LLM** — any model available in Ollama works:
 
-```
-indexes/
-  <name>/
-    data/                   ← put your documents here
-    chroma_db/              ← vector embeddings (auto-generated)
-    docstore.json           ← node store for auto-merging (auto-generated)
-    bm25_index.pkl/         ← keyword index (auto-generated)
-    leaf_nodes.pkl          ← leaf node cache (auto-generated)
-    .ingested_files.json    ← tracks indexed files (auto-generated)
+```python
+# config.py
+LLM_MODEL = "llama3.2"   # lighter
+LLM_MODEL = "mistral"    # fast
+LLM_MODEL = "gemma4"     # best instruction-following (recommended)
 ```
 
-Only `data/` needs to be managed by you. Delete an index with `rm -rf indexes/<name>/`.
+---
 
-## Supported File Types
-
-| Type | Extensions |
-|------|-----------|
-| Text | `.txt`, `.md` |
-| PDF | `.pdf` |
-| Word | `.docx` |
-| Image | `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp` |
-
-## Run Tests
+## Running Tests
 
 ```bash
 source venv/bin/activate
 pytest -v
 ```
+
+---
+
+## Deployment Notes
+
+- **Single user / local:** run `python mcp_server.py` as-is
+- **Team / shared server:** run behind a reverse proxy (nginx, Caddy) and bind to `0.0.0.0` (already the default); add auth at the proxy layer if needed
+- **Multiple environments:** each environment maintains its own `indexes/` directory; indexes are fully portable — copy the folder to move them
+- **Port:** default is `8765`; change by passing `--port` to uvicorn or editing the `__main__` block in `mcp_server.py`
+
+---
 
 ## Migration from Earlier Versions
 

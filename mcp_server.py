@@ -45,7 +45,7 @@ from config import EMBED_MODEL, OLLAMA_BASE_URL
 from query import list_indexed, build_retriever, build_agent, format_sources
 from utils.ollama_check import check_ollama_running
 
-app = FastAPI(title="RAG Pipeline MCP Server")
+app = FastAPI(title="Recall")
 
 # session_id -> ReActAgent (lives for the lifetime of the server process)
 _sessions: Dict[str, Any] = {}
@@ -167,7 +167,7 @@ async def query_stream(req: QueryRequest):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-server = Server("rag-pipeline")
+server = Server("recall")
 sse = SseServerTransport("/messages")
 
 
